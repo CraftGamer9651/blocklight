@@ -1,0 +1,89 @@
+/* ---------------------------------------------------------------------
+   Design plan
+   -----------
+   Blocklight reads as a precision instrument for managing modded
+   Minecraft instances, not a marketing site or generic SaaS dashboard.
+
+   Color (functional, not decorative):
+     --bg / --surface / --surface-raised / --line   graphite scale, base
+     --ink / --ink-dim                               text
+     --ember / --ember-strong                        primary action (torchlight)
+     --lime                                           offline/local status only
+     --signal-blue                                    online/account status only
+     --danger                                          errors
+
+   Type: Space Grotesk for headings (geometric, a little technical),
+   IBM Plex Sans for body/UI (engineered, legible). No monospace --
+   version numbers and file sizes use tabular figures in Plex Sans
+   instead of a separate mono face.
+
+   Shape: one signature silhouette -- a notched-corner tile, used for
+   every project/instance card -- instead of uniform rounded rectangles.
+   Everything else stays flat and quiet.
+--------------------------------------------------------------------- */
+
+:root {
+  --bg: #15171b;
+  --surface: #1d2025;
+  --surface-raised: #262a31;
+  --surface-hover: #2c313a;
+  --line: #34383f;
+  --line-soft: #282c33;
+
+  --ink: #eceef1;
+  --ink-dim: #9298a3;
+  --ink-faint: #656b76;
+
+  --ember: #e2a24b;
+  --ember-strong: #c8862e;
+  --ember-wash: rgba(226, 162, 75, 0.12);
+
+  --lime: #8fd14f;
+  --lime-wash: rgba(143, 209, 79, 0.12);
+
+  --signal-blue: #4f9cf0;
+  --signal-blue-wash: rgba(79, 156, 240, 0.12);
+
+  --danger: #e2584f;
+  --danger-wash: rgba(226, 88, 79, 0.12);
+
+  --font-display: -apple-system, "Segoe UI Variable Display", "Segoe UI", "Ubuntu",
+    "Cantarell", "Noto Sans", sans-serif;
+  --font-body: -apple-system, "Segoe UI Variable Text", "Segoe UI", "Ubuntu", "Cantarell",
+    "Noto Sans", sans-serif;
+
+  --radius-tile: 14px;
+  --notch: 10px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --shadow-panel: 0 1px 0 rgba(0, 0, 0, 0.4), 0 12px 24px -16px rgba(0, 0, 0, 0.55);
+
+  color-scheme: dark;
+}
+
+/* The notched-tile silhouette: clipped corners rather than a border
+   radius, used for instance tiles and project/preview cards -- the
+   one signature shape in the app. */
+.notched {
+  clip-path: polygon(
+    var(--notch) 0,
+    calc(100% - var(--notch)) 0,
+    100% var(--notch),
+    100% calc(100% - var(--notch)),
+    calc(100% - var(--notch)) 100%,
+    var(--notch) 100%,
+    0 calc(100% - var(--notch)),
+    0 var(--notch)
+  );
+}
+
+.notched-sm {
+  --notch: 7px;
+}

@@ -1,0 +1,50 @@
+[package]
+name = "blocklight"
+version = "0.1.0"
+description = "Blocklight - a Minecraft instance launcher with Modrinth/CurseForge link import and a real offline mode"
+authors = ["CraftGamer9651 <https://github.com/CraftGamer9651>"]
+homepage = "https://craftgamer9651.github.io/"
+repository = "https://github.com/CraftGamer9651/blocklight"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "blocklight_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "io-util", "process", "sync"] }
+futures-util = "0.3"
+async-trait = "0.1"
+
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+url = "2.5"
+sha1 = "0.10"
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+zip = { version = "1", default-features = false, features = ["deflate"] }
+
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"
+thiserror = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
