@@ -19,8 +19,6 @@ export default function App() {
     useInstances();
 
   if (account === null) {
-    // Still loading account state from the local database -- avoid a
-    // first-run flash while that resolves.
     return <div style={{ height: "100vh", background: "var(--bg)" }} />;
   }
 
@@ -59,6 +57,10 @@ export default function App() {
                   onSelect={setSelectedId}
                   connectivity={connectivity}
                   onInstanceCreated={async (instance) => {
+                    await refreshInstances();
+                    setSelectedId(instance.id);
+                  }}
+                  onInstanceUpdated={async (instance) => {
                     await refreshInstances();
                     setSelectedId(instance.id);
                   }}
