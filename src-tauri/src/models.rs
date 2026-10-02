@@ -102,6 +102,10 @@ pub struct Instance {
     /// Slugs/ids of content already installed in this instance, keyed by
     /// platform, used for "already installed" detection.
     pub installed: Vec<InstalledContent>,
+    /// Custom JVM arguments to append when launching this instance.
+    /// Can include flags like -Xmx, -Xms, system properties, etc.
+    #[serde(default)]
+    pub custom_jvm_arguments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
