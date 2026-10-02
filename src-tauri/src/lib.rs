@@ -82,6 +82,7 @@ pub fn run() {
             commands::sign_in_with_microsoft,
             commands::set_curseforge_api_key,
             commands::has_curseforge_api_key,
+            commands::set_instance_jvm_arguments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Blocklight");
