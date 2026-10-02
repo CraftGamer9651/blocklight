@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { checkOfflineReadiness } from "@/lib/tauri";
+import { checkOfflineReadiness, setInstanceJvmArguments } from "@/lib/tauri";
 import { loaderLabel } from "@/lib/format";
 import type { ConnectivityState, Instance, OfflineReadiness } from "@/lib/types";
 import { Badge, Button } from "@/components/shared/Primitives";
@@ -19,6 +19,7 @@ export function HomePage({
   onSelect,
   connectivity,
   onInstanceCreated,
+  onInstanceUpdated,
 }: {
   instances: Instance[];
   selected: Instance | null;
@@ -26,6 +27,7 @@ export function HomePage({
   onSelect: (id: string) => void;
   connectivity: ConnectivityState;
   onInstanceCreated: (instance: Instance) => void;
+  onInstanceUpdated: (instance: Instance) => void;
 }) {
   const [installKey, setInstallKey] = useState(0);
   const [creatingInstance, setCreatingInstance] = useState(false);
@@ -63,7 +65,13 @@ export function HomePage({
         </div>
       </div>
 
-      {selected && <InstanceTile instance={selected} refreshKey={installKey} />}
+      {selected && (
+        <InstanceTile
+          instance={selected}
+          refreshKey={installKey}
+          onInstanceUpdated={onInstanceUpdated}
+        />
+      )}
 
       <PasteLinkPanel instanceId={selectedId} flow={flow} />
       <LinkFlowResult flow={flow} />
@@ -85,14 +93,43 @@ export function HomePage({
   );
 }
 
-function InstanceTile({ instance, refreshKey }: { instance: Instance; refreshKey: number }) {
+function InstanceTile({
+  instance,
+  refreshKey,
+  onInstanceUpdated,
+}: {
+  instance: Instance;
+  refreshKey: number;
+  onInstanceUpdated: (instance: Instance) => void;
+}) {
   const [readiness, setReadiness] = useState<OfflineReadiness | null>(null);
+  const [customJvmArgs, setCustomJvmArgs] = useState(instance.customJvmArguments.join(" "));
+  const [saving, setSaving] = useState(false);
   const launch = useLaunch(instance.id);
+
   const busy = launch.state.kind === "preparing" || launch.state.kind === "running";
 
   useEffect(() => {
     checkOfflineReadiness(instance.id).then(setReadiness).catch(() => {});
   }, [instance.id, instance.installed.length, refreshKey]);
+
+  useEffect(() => {
+    setCustomJvmArgs(instance.customJvmArguments.join(" "));
+  }, [instance.customJvmArguments, instance.id]);
+
+  async function saveCustomJvmArgs() {
+    setSaving(true);
+    try {
+      const updated = await setInstanceJvmArguments(
+        instance.id,
+        customJvmArgs.split(/\s+/).filter(Boolean),
+      );
+      onInstanceUpdated(updated);
+      setCustomJvmArgs(updated.customJvmArguments.join(" "));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="tile notched" style={{ padding: 20 }}>
@@ -131,6 +168,36 @@ function InstanceTile({ instance, refreshKey }: { instance: Instance; refreshKey
             {readiness.missing.length === 1 ? "" : "s"}
           </Badge>
         )}
+      </div>
+
+      <div
+        style={{
+          marginTop: 16,
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 12,
+          background: "rgba(255,255,255,0.06)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <label className="field-label" htmlFor={`jvm-args-${instance.id}`}>
+            JVM arguments
+          </label>
+          <Button size="sm" variant="secondary" onClick={saveCustomJvmArgs} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+        </div>
+        <textarea
+          id={`jvm-args-${instance.id}`}
+          className="text-input"
+          rows={3}
+          value={customJvmArgs}
+          onChange={(e) => setCustomJvmArgs(e.target.value)}
+          style={{ width: "100%", resize: "vertical", marginTop: 8 }}
+        />
+        <div className="meta-row" style={{ marginTop: 8 }}>
+          <span>Example: -Xmx4G -XX:+UseG1GC -Dsun.java2d.opengl=true</span>
+        </div>
       </div>
 
       <LaunchPanel
