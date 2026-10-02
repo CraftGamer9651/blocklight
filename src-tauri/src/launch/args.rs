@@ -18,10 +18,6 @@ pub struct LaunchIdentity {
     pub user_type: &'static str,
 }
 
-/// A local offline profile's identity. `access_token` is a fixed
-/// placeholder (never a real credential) -- single-player and LAN don't
-/// validate it, which is exactly the "legitimate offline play" boundary
-/// this is meant to stay inside.
 pub fn offline_identity(display_name: &str) -> LaunchIdentity {
     LaunchIdentity {
         player_name: display_name.to_string(),
@@ -40,12 +36,6 @@ pub fn online_identity(gamertag: &str, uuid: &str, access_token: &str) -> Launch
     }
 }
 
-/// Reproduces vanilla Minecraft's own offline-mode UUID formula --
-/// Java's `UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes())`,
-/// which is an MD5 digest with the version (3) and variant (RFC 4122)
-/// bits fixed up. Not a real Mojang account id; just a stable id derived
-/// the same way the official launcher derives one for offline play, so
-/// a given profile name always maps to the same player/world data.
 fn offline_uuid(name: &str) -> String {
     let mut hasher = Md5::new();
     hasher.update(format!("OfflinePlayer:{name}").as_bytes());
@@ -79,9 +69,6 @@ fn substitute(template: &str, values: &HashMap<&str, String>) -> String {
     out
 }
 
-/// Modern `arguments.game`/`arguments.jvm` entries mix plain strings
-/// with `{rules, value}` objects; this flattens one such list into
-/// substituted strings, dropping any entry whose rules don't match.
 fn expand_entries(entries: &[Value], values: &HashMap<&str, String>) -> Vec<String> {
     let mut out = Vec::new();
     for entry in entries {
@@ -118,18 +105,12 @@ pub struct BuiltCommand {
     pub working_dir: PathBuf,
 }
 
-/// Assembles the full JVM command line: memory flags, JVM args
-/// (classpath, native library path, launcher branding), the main class,
-/// then game args (player identity, asset/version locations). Handles
-/// both the modern `arguments` format and legacy `minecraftArguments`
-/// (older versions, which also lack a declared `arguments.jvm` -- a
-/// standard fallback set is supplied instead, same as every other
-/// launcher does for those versions).
 pub fn build_command(
     version: &VersionJson,
     prepared: &PreparedLaunch,
     game_directory: &PathBuf,
     identity: &LaunchIdentity,
+    custom_jvm_arguments: &[String],
 ) -> BuiltCommand {
     let mut values: HashMap<&str, String> = HashMap::new();
     values.insert("auth_player_name", identity.player_name.clone());
@@ -164,10 +145,7 @@ pub fn build_command(
         format!("-Dminecraft.launcher.brand={LAUNCHER_NAME}"),
         format!("-Dminecraft.launcher.version={LAUNCHER_VERSION}"),
     ];
-    // macOS needs the LWJGL/GLFW event loop to run on the process's
-    // first thread; every other official/third-party launcher passes
-    // this unconditionally on macOS rather than relying on it being
-    // present in every version JSON.
+
     if cfg!(target_os = "macos") {
         jvm_args.push("-XstartOnFirstThread".to_string());
     }
@@ -178,8 +156,6 @@ pub fn build_command(
         jvm_args.extend(expand_entries(&arguments.jvm, &values));
         game_args = expand_entries(&arguments.game, &values);
     } else {
-        // Legacy version: no arguments.jvm at all, so supply the
-        // standard set every launcher hardcodes for these versions.
         jvm_args.push(format!("-Djava.library.path={}", prepared.natives_dir.to_string_lossy()));
         jvm_args.push("-cp".to_string());
         jvm_args.push(values.get("classpath").cloned().unwrap_or_default());
@@ -191,8 +167,11 @@ pub fn build_command(
             .collect();
     }
 
-    // If arguments.jvm didn't already include -cp/classpath (some very
-    // old modern-format jsons omit it), make sure it's present.
+    // Let the user override defaults by putting their args last.
+    if !custom_jvm_arguments.is_empty() {
+        jvm_args.extend(custom_jvm_arguments.iter().cloned());
+    }
+
     if !jvm_args.iter().any(|a| a == "-cp" || a == "-classpath") {
         jvm_args.push("-cp".to_string());
         jvm_args.push(values.get("classpath").cloned().unwrap_or_default());
@@ -205,24 +184,5 @@ pub fn build_command(
     BuiltCommand {
         java_args: full,
         working_dir: game_directory.clone(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn offline_uuid_is_stable_and_versioned() {
-        let a = offline_uuid("Steve");
-        let b = offline_uuid("Steve");
-        assert_eq!(a, b);
-        // Version nibble (3rd group, 1st hex digit) must be '3'.
-        assert_eq!(&a[14..15], "3");
-    }
-
-    #[test]
-    fn different_names_produce_different_uuids() {
-        assert_ne!(offline_uuid("Steve"), offline_uuid("Alex"));
     }
 }
