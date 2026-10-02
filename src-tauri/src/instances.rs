@@ -9,14 +9,6 @@ use crate::db::app_data_dir;
 use crate::error::AppError;
 use crate::models::{InstalledContent, Instance, Loader};
 
-/// Full instance/world/Java management (downloading Minecraft versions,
-/// installing loaders, provisioning Java runtimes) is its own large
-/// feature and out of scope for the link-import and offline-mode specs
-/// this app implements. `InstanceStore` provides just enough of a real,
-/// disk-backed instance list for those two features to operate against:
-/// compatibility checks, dependency checks, "already installed"
-/// detection, and offline readiness all read genuine data from here
-/// rather than being mocked inline in a command handler.
 pub struct InstanceStore {
     path: PathBuf,
     instances: Mutex<Vec<Instance>>,
@@ -76,6 +68,31 @@ impl InstanceStore {
             .ok_or_else(|| AppError::Internal(format!("unknown instance: {id}")))
     }
 
+    pub fn update_jvm_arguments(
+        &self,
+        instance_id: &str,
+        custom_jvm_arguments: Vec<String>,
+    ) -> Result<Instance, AppError> {
+        let cleaned: Vec<String> = custom_jvm_arguments
+            .into_iter()
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect();
+
+        {
+            let mut guard = self.instances.lock().unwrap();
+            let instance = guard
+                .iter_mut()
+                .find(|i| i.id == instance_id)
+                .ok_or_else(|| AppError::Internal(format!("unknown instance: {instance_id}")))?;
+
+            instance.custom_jvm_arguments = cleaned.clone();
+        }
+
+        self.persist()?;
+        self.get(instance_id)
+    }
+
     pub fn record_installed(
         &self,
         instance_id: &str,
@@ -96,13 +113,6 @@ impl InstanceStore {
         self.persist()
     }
 
-    /// Creates a new instance backed by a real directory on disk (with
-    /// the same `mods/resourcepacks/shaderpacks/saves` layout as the
-    /// seeded example), persists it, and returns it. This deliberately
-    /// stops at "an instance with a Minecraft version and loader exists" —
-    /// it doesn't download Minecraft, a mod loader, or a Java runtime,
-    /// which is the larger instance-management feature neither spec this
-    /// app implements covers (see the README).
     pub fn create(
         &self,
         name: &str,
@@ -139,6 +149,7 @@ impl InstanceStore {
             java_major_version,
             instance_dir: instance_dir.to_string_lossy().to_string(),
             installed: Vec::new(),
+            custom_jvm_arguments: Vec::new(),
         };
 
         self.instances.lock().unwrap().push(instance.clone());
@@ -147,9 +158,6 @@ impl InstanceStore {
         Ok(instance)
     }
 
-    /// Appends `-2`, `-3`, ... to `base` until it doesn't collide with an
-    /// existing instance's directory name, so two instances (e.g. two
-    /// people both naming one "Modded Survival") never share a folder.
     fn unique_slug(&self, base: &str) -> String {
         let existing_slugs: Vec<String> = {
             let guard = self.instances.lock().unwrap();
@@ -177,11 +185,9 @@ impl InstanceStore {
     }
 }
 
-/// Lowercase, hyphen-separated, filesystem-safe folder name derived from
-/// a user-chosen instance name. Never returns an empty string.
 fn slugify(input: &str) -> String {
     let mut out = String::new();
-    let mut last_was_dash = true; // avoid a leading dash
+    let mut last_was_dash = true;
     for ch in input.to_ascii_lowercase().chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch);
@@ -217,135 +223,6 @@ fn seed_instances(data_dir: &std::path::Path) -> Vec<Instance> {
         java_major_version: Some(21),
         instance_dir: survival_dir.to_string_lossy().to_string(),
         installed: Vec::new(),
+        custom_jvm_arguments: Vec::new(),
     }]
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OfflineReadiness {
-    pub ready: bool,
-    pub missing: Vec<String>,
-}
-
-/// Local-only readiness check: does the instance directory and each
-/// tracked installed file still exist on disk. This never touches the
-/// network, which is exactly what lets it run while offline.
-pub fn check_offline_readiness(instance: &Instance) -> OfflineReadiness {
-    let mut missing = Vec::new();
-    let dir = PathBuf::from(&instance.instance_dir);
-
-    if !dir.exists() {
-        return OfflineReadiness {
-            ready: false,
-            missing: vec!["instance directory".to_string()],
-        };
-    }
-
-    for content in &instance.installed {
-        let subdir = content.content_type.install_subdir();
-        let path = dir.join(subdir).join(&content.file_name);
-        if !path.exists() {
-            missing.push(content.file_name.clone());
-        }
-    }
-
-    OfflineReadiness {
-        ready: missing.is_empty(),
-        missing,
-    }
-}
-
-/// Copies a world folder to `<instance>/backups/<world>-<timestamp>`.
-/// Purely local file copying, never touches the network, and never
-/// modifies or deletes the original -- matching "never delete or modify
-/// a world without explicit confirmation".
-pub fn backup_world(instance: &Instance, folder_name: &str) -> Result<String, AppError> {
-    // Reuse the same filename-safety rule as downloads: a folder name
-    // must be a bare path segment, never `..` or an absolute path.
-    if folder_name.is_empty()
-        || folder_name.contains('/')
-        || folder_name.contains('\\')
-        || folder_name == ".."
-    {
-        return Err(AppError::PathTraversal(folder_name.to_string()));
-    }
-
-    let instance_dir = PathBuf::from(&instance.instance_dir);
-    let source = instance_dir.join("saves").join(folder_name);
-    if !source.join("level.dat").exists() {
-        return Err(AppError::Internal("not a valid world folder".into()));
-    }
-
-    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
-    let dest = instance_dir
-        .join("backups")
-        .join(format!("{folder_name}-{stamp}"));
-
-    copy_dir_recursive(&source, &dest)?;
-    Ok(dest.to_string_lossy().to_string())
-}
-
-fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<(), AppError> {
-    std::fs::create_dir_all(dest)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let dest_path = dest.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_recursive(&entry.path(), &dest_path)?;
-        } else if ty.is_file() {
-            std::fs::copy(entry.path(), &dest_path)?;
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorldSummary {
-    pub name: String,
-    pub folder_name: String,
-    pub save_path: String,
-    pub last_played: Option<String>,
-}
-
-/// Scans `<instance>/saves` for real world folders (anything containing a
-/// `level.dat`). Purely local filesystem access, so it works offline.
-pub fn list_worlds(instance: &Instance) -> Vec<WorldSummary> {
-    let saves_dir = PathBuf::from(&instance.instance_dir).join("saves");
-    let mut worlds = Vec::new();
-
-    let Ok(entries) = std::fs::read_dir(&saves_dir) else {
-        return worlds;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if !path.join("level.dat").exists() {
-            continue;
-        }
-        let folder_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let last_played = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok()
-            .map(|t| {
-                let datetime: chrono::DateTime<Utc> = t.into();
-                datetime.to_rfc3339()
-            });
-
-        worlds.push(WorldSummary {
-            name: folder_name.clone(),
-            folder_name,
-            save_path: path.to_string_lossy().to_string(),
-            last_played,
-        });
-    }
-
-    worlds
 }
