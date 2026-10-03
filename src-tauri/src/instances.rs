@@ -101,6 +101,26 @@ impl InstanceStore {
         self.get(instance_id)
     }
 
+    pub fn record_installed(
+        &self,
+        instance_id: &str,
+        content: InstalledContent,
+    ) -> Result<(), AppError> {
+        {
+            let mut guard = self.instances.lock().unwrap();
+            let instance = guard
+                .iter_mut()
+                .find(|i| i.id == instance_id)
+                .ok_or_else(|| AppError::Internal(format!("unknown instance: {instance_id}")))?;
+
+            instance
+                .installed
+                .retain(|c| c.project_id != content.project_id);
+            instance.installed.push(content);
+        }
+        self.persist()
+    }
+
     /// Creates a new instance backed by a real directory on disk (with
     /// the same `mods/resourcepacks/shaderpacks/saves` layout as the
     /// seeded example), persists it, and returns it. This deliberately
