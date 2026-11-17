@@ -1,608 +1,632 @@
-diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index f1ae568..acdcf73 100644
---- a/src-tauri/src/lib.rs
-+++ b/src-tauri/src/lib.rs
-@@ -11,6 +11,7 @@ mod local_content;
- mod models;
- mod msa;
- mod network_monitor;
-+mod performance;
- mod presence;
- mod profiles;
- mod providers;
-@@ -108,6 +109,8 @@ pub fn run() {
-             commands::delete_offline_profile,
-             commands::switch_to_microsoft,
-             commands::sign_in_with_microsoft,
-+            performance::performance_pack_info,
-+            performance::install_performance_pack,
-             commands::set_curseforge_api_key,
-             commands::has_curseforge_api_key,
-         ])
-diff --git a/src-tauri/src/performance.rs b/src-tauri/src/performance.rs
-new file mode 100644
-index 0000000..787963c
---- /dev/null
-+++ b/src-tauri/src/performance.rs
-@@ -0,0 +1,341 @@
-+//! Performance Pack: a one-click set of well-known optimization mods.
-+//!
-+//! Blocklight doesn't ship its own game client. Minecraft's rendering
-+//! and tick-loop speedups come from mods that patch the game (Sodium for
-+//! rendering, Lithium for game logic, and so on), so the pack installs
-+//! those from Modrinth through the same download pipeline link installs
-+//! use: compatibility check, required-dependency resolution, hash-verified
-+//! download, install record, history entry.
-+//!
-+//! Each mod is installed independently. One without a build for the
-+//! instance's Minecraft version is reported as skipped and the rest still
-+//! install, because new Minecraft versions routinely land before every
-+//! optimization mod catches up.
-+
-+use serde::Serialize;
-+use tauri::State;
-+
-+use crate::commands::AppState;
-+use crate::compatibility;
-+use crate::dependencies;
-+use crate::downloader;
-+use crate::error::AppError;
-+use crate::history;
-+use crate::models::{DependencyKind, Instance, InstalledContent, Loader, Platform};
-+
-+pub struct PackMod {
-+    /// Modrinth project slug.
-+    pub slug: &'static str,
-+    pub label: &'static str,
-+    pub purpose: &'static str,
+diff --git a/src-tauri/src/launch/loader_profile.rs b/src-tauri/src/launch/loader_profile.rs
+index 5206818..01b4cc9 100644
+--- a/src-tauri/src/launch/loader_profile.rs
++++ b/src-tauri/src/launch/loader_profile.rs
+@@ -52,6 +52,45 @@ struct LoaderBuildInfo {
+     stable: bool,
+ }
+ 
++/// One selectable loader build for the New Instance dropdown.
++#[derive(Debug, Clone, serde::Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct LoaderVersionOption {
++    pub version: String,
++    pub stable: bool,
 +}
 +
-+const SODIUM: PackMod = PackMod {
-+    slug: "sodium",
-+    label: "Sodium",
-+    purpose: "Rewrites the renderer: much higher FPS and smoother frame times",
-+};
-+const EMBEDDIUM: PackMod = PackMod {
-+    slug: "embeddium",
-+    label: "Embeddium",
-+    purpose: "Sodium port for Forge: much higher FPS and smoother frame times",
-+};
-+const LITHIUM: PackMod = PackMod {
-+    slug: "lithium",
-+    label: "Lithium",
-+    purpose: "Optimizes game logic, physics and chunk handling",
-+};
-+const FERRITECORE: PackMod = PackMod {
-+    slug: "ferrite-core",
-+    label: "FerriteCore",
-+    purpose: "Cuts memory use, which helps heavy modpacks",
-+};
-+const MODERNFIX: PackMod = PackMod {
-+    slug: "modernfix",
-+    label: "ModernFix",
-+    purpose: "Faster startup and world loading, lower memory use",
-+};
-+const IMMEDIATELYFAST: PackMod = PackMod {
-+    slug: "immediatelyfast",
-+    label: "ImmediatelyFast",
-+    purpose: "Speeds up UI, text and entity batching",
-+};
-+const ENTITYCULLING: PackMod = PackMod {
-+    slug: "entityculling",
-+    label: "Entity Culling",
-+    purpose: "Skips rendering entities you can't see",
-+};
-+
-+const FABRIC_PACK: &[PackMod] = &[SODIUM, LITHIUM, FERRITECORE, MODERNFIX, IMMEDIATELYFAST, ENTITYCULLING];
-+// Lithium has no official NeoForge build, so it's left out here.
-+const NEOFORGE_PACK: &[PackMod] = &[SODIUM, FERRITECORE, MODERNFIX, IMMEDIATELYFAST, ENTITYCULLING];
-+const FORGE_PACK: &[PackMod] = &[EMBEDDIUM, FERRITECORE, MODERNFIX, IMMEDIATELYFAST, ENTITYCULLING];
-+
-+/// `None` for vanilla instances: nothing can be injected without a loader.
-+pub fn preset_for(loader: Loader) -> Option<&'static [PackMod]> {
-+    match loader {
-+        Loader::Fabric | Loader::Quilt => Some(FABRIC_PACK),
-+        Loader::NeoForge => Some(NEOFORGE_PACK),
-+        Loader::Forge => Some(FORGE_PACK),
-+        Loader::Minecraft => None,
++/// Every Fabric/Quilt loader build published for a Minecraft version,
++/// newest first (the meta API's own order). Empty when the loader doesn't
++/// support that Minecraft version.
++pub async fn list_loader_versions(
++    client: &reqwest::Client,
++    loader: Loader,
++    minecraft_version: &str,
++) -> Result<Vec<LoaderVersionOption>, AppError> {
++    let meta = meta_for(loader)?;
++    let url = format!("{}{}/{}", meta.base, meta.list_prefix, minecraft_version);
++    let resp = client.get(&url).send().await?;
++    if matches!(
++        resp.status(),
++        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::BAD_REQUEST
++    ) {
++        return Ok(Vec::new());
 +    }
-+}
-+
-+fn normalize(s: &str) -> String {
-+    s.chars()
-+        .filter(|c| !matches!(c, '-' | '_' | '+' | ' ' | '.'))
-+        .flat_map(|c| c.to_lowercase())
-+        .collect()
-+}
-+
-+/// True if the mod is already in the instance: either Blocklight
-+/// installed it, or a hand-added jar's file name starts with the mod's
-+/// name followed by a version or loader tag. That second rule keeps
-+/// `sodium-fabric-0.6.jar` matching `sodium` while `sodium-extra-...`
-+/// and `reeses-sodium-options-...` do not.
-+pub fn is_present(instance: &Instance, slug: &str) -> bool {
-+    if instance.installed.iter().any(|c| c.project_slug == slug) {
-+        return true;
-+    }
-+    let mods_dir = std::path::Path::new(&instance.instance_dir).join("mods");
-+    let Ok(entries) = std::fs::read_dir(mods_dir) else {
-+        return false;
-+    };
-+    entries
-+        .flatten()
-+        .filter_map(|e| e.file_name().into_string().ok())
-+        .any(|name| file_name_matches(&name, slug))
-+}
-+
-+fn file_name_matches(file_name: &str, slug: &str) -> bool {
-+    let lower = file_name.to_ascii_lowercase();
-+    let Some(stem) = lower.strip_suffix(".jar") else {
-+        return false;
-+    };
-+    let stem = normalize(stem);
-+    let Some(rest) = stem.strip_prefix(&normalize(slug)) else {
-+        return false;
-+    };
-+    rest.is_empty()
-+        || rest.starts_with(|c: char| c.is_ascii_digit())
-+        || ["fabric", "neoforge", "forge", "quilt", "mc"]
-+            .iter()
-+            .any(|tag| rest.starts_with(tag))
-+}
-+
-+#[derive(Debug, Serialize)]
-+#[serde(rename_all = "camelCase")]
-+pub struct PackEntry {
-+    pub slug: String,
-+    pub label: String,
-+    pub purpose: String,
-+    pub already_installed: bool,
-+}
-+
-+#[derive(Debug, Serialize)]
-+#[serde(rename_all = "camelCase")]
-+pub struct PackSkip {
-+    pub label: String,
-+    pub reason: String,
-+}
-+
-+#[derive(Debug, Serialize)]
-+#[serde(rename_all = "camelCase")]
-+pub struct PackResult {
-+    pub installed: Vec<String>,
-+    pub skipped: Vec<PackSkip>,
-+    pub instance: Instance,
-+}
-+
-+/// What the pack would install for this instance, and what's already there.
-+/// Local-only, so it works offline.
-+#[tauri::command]
-+pub fn performance_pack_info(
-+    state: State<AppState>,
-+    instance_id: String,
-+) -> Result<Vec<PackEntry>, AppError> {
-+    let instance = state.instances.get(&instance_id)?;
-+    let preset = preset_for(instance.loader).ok_or_else(vanilla_error)?;
-+    Ok(preset
-+        .iter()
-+        .map(|m| PackEntry {
-+            slug: m.slug.to_string(),
-+            label: m.label.to_string(),
-+            purpose: m.purpose.to_string(),
-+            already_installed: is_present(&instance, m.slug),
++    let entries: Vec<LoaderVersionEntry> = resp
++        .error_for_status()
++        .map_err(AppError::from)?
++        .json()
++        .await?;
++    Ok(entries
++        .into_iter()
++        .map(|e| LoaderVersionOption {
++            version: e.loader.version,
++            stable: e.loader.stable,
 +        })
 +        .collect())
 +}
 +
+ async fn resolve_loader_version(
+     client: &reqwest::Client,
+     meta: &LoaderMeta,
+diff --git a/src-tauri/src/launch/manifest.rs b/src-tauri/src/launch/manifest.rs
+index c3eac0f..679cb49 100644
+--- a/src-tauri/src/launch/manifest.rs
++++ b/src-tauri/src/launch/manifest.rs
+@@ -28,6 +28,102 @@ struct RawManifest {
+ struct RawManifestEntry {
+     id: String,
+     url: String,
++    #[serde(rename = "type", default)]
++    kind: String,
++    #[serde(rename = "releaseTime", default)]
++    release_time: String,
++}
++
++/// One row of Mojang's version list, for the New Instance dropdown.
++/// `kind` is Mojang's own label: "release", "snapshot", "old_beta", "old_alpha".
++#[derive(Debug, Clone, serde::Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ManifestVersion {
++    pub id: String,
++    pub kind: String,
++    pub release_time: String,
++}
++
++async fn fetch_manifest_body(client: &reqwest::Client) -> Result<String, AppError> {
++    let body = client
++        .get(MANIFEST_URL)
++        .send()
++        .await?
++        .error_for_status()
++        .map_err(AppError::from)?
++        .text()
++        .await?;
++    Ok(body)
++}
++
++/// Reads the cached manifest. `max_age` of `None` accepts a stale copy
++/// (used as the offline fallback).
++async fn read_cached_manifest(max_age: Option<Duration>) -> Option<String> {
++    let path = manifest_cache_path().ok()?;
++    if let Some(max_age) = max_age {
++        let modified = tokio::fs::metadata(&path).await.ok()?.modified().ok()?;
++        let age = std::time::SystemTime::now().duration_since(modified).ok()?;
++        if age > max_age {
++            return None;
++        }
++    }
++    tokio::fs::read_to_string(&path).await.ok()
++}
++
++fn to_manifest_versions(manifest: RawManifest) -> Vec<ManifestVersion> {
++    manifest
++        .versions
++        .into_iter()
++        .map(|v| ManifestVersion {
++            id: v.id,
++            kind: v.kind,
++            release_time: v.release_time,
++        })
++        .collect()
++}
++
++/// Every Minecraft version Mojang lists, newest first. Uses the same
++/// cached manifest as launching; if the network is down it falls back to
++/// a stale cached copy, so the dropdown still works offline once the
++/// manifest has been fetched at least once.
++pub async fn list_versions(client: &reqwest::Client) -> Result<Vec<ManifestVersion>, AppError> {
++    if let Some(text) = read_cached_manifest(Some(MANIFEST_CACHE_TTL)).await {
++        if let Ok(manifest) = serde_json::from_str::<RawManifest>(&text) {
++            return Ok(to_manifest_versions(manifest));
++        }
++    }
++
++    match fetch_manifest_body(client).await {
++        Ok(body) => {
++            if let Ok(path) = manifest_cache_path() {
++                if let Some(parent) = path.parent() {
++                    let _ = tokio::fs::create_dir_all(parent).await;
++                }
++                let _ = tokio::fs::write(&path, &body).await;
++            }
++            let manifest: RawManifest = serde_json::from_str(&body)
++                .map_err(|e| AppError::Internal(format!("couldn't parse version manifest: {e}")))?;
++            Ok(to_manifest_versions(manifest))
++        }
++        Err(err) => {
++            if let Some(text) = read_cached_manifest(None).await {
++                if let Ok(manifest) = serde_json::from_str::<RawManifest>(&text) {
++                    return Ok(to_manifest_versions(manifest));
++                }
++            }
++            Err(err)
++        }
++    }
++}
++
++/// The Java major version Mojang says this Minecraft version needs, or
++/// `None` for old versions whose metadata doesn't say.
++pub async fn recommended_java(
++    client: &reqwest::Client,
++    minecraft_version: &str,
++) -> Result<Option<u32>, AppError> {
++    let json = fetch_vanilla_version_json(client, minecraft_version).await?;
++    Ok(json.java_version.map(|j| j.major_version))
+ }
+ 
+ fn manifest_cache_path() -> Result<std::path::PathBuf, AppError> {
+diff --git a/src-tauri/src/launch/neoforge.rs b/src-tauri/src/launch/neoforge.rs
+index 8538dbc..d9303c6 100644
+--- a/src-tauri/src/launch/neoforge.rs
++++ b/src-tauri/src/launch/neoforge.rs
+@@ -133,6 +133,43 @@ struct NeoForgeVersionList {
+     versions: Vec<String>,
+ }
+ 
++/// Every NeoForge build for a Minecraft version, newest first. Versions
++/// with a `-` suffix (beta/alpha) are marked unstable. Empty when the
++/// Minecraft version has no NeoForge numbering (anything not `1.x`).
++pub async fn list_neoforge_versions(
++    client: &reqwest::Client,
++    minecraft_version: &str,
++) -> Result<Vec<super::loader_profile::LoaderVersionOption>, AppError> {
++    let Ok(prefix) = mc_version_to_neoforge_prefix(minecraft_version) else {
++        return Ok(Vec::new());
++    };
++
++    let url = format!("{NEOFORGE_MAVEN}/api/maven/versions/releases/net/neoforged/neoforge");
++    let list: NeoForgeVersionList = client
++        .get(&url)
++        .send()
++        .await?
++        .error_for_status()
++        .map_err(AppError::from)?
++        .json()
++        .await?;
++
++    let mut versions: Vec<String> = list
++        .versions
++        .into_iter()
++        .filter(|v| v.starts_with(&prefix))
++        .collect();
++    versions.sort_by(|a, b| compare_version_strings(b, a));
++
++    Ok(versions
++        .into_iter()
++        .map(|version| super::loader_profile::LoaderVersionOption {
++            stable: !version.contains('-'),
++            version,
++        })
++        .collect())
++}
++
+ async fn resolve_latest_neoforge_version(
+     client: &reqwest::Client,
+     minecraft_version: &str,
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index acdcf73..1f19475 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -18,6 +18,7 @@ mod providers;
+ mod skin_core;
+ mod skins;
+ mod url_resolver;
++mod version_catalog;
+ 
+ use std::sync::Arc;
+ 
+@@ -109,6 +110,9 @@ pub fn run() {
+             commands::delete_offline_profile,
+             commands::switch_to_microsoft,
+             commands::sign_in_with_microsoft,
++            version_catalog::list_minecraft_versions,
++            version_catalog::list_loader_versions,
++            version_catalog::recommended_java,
+             performance::performance_pack_info,
+             performance::install_performance_pack,
+             commands::set_curseforge_api_key,
+diff --git a/src-tauri/src/version_catalog.rs b/src-tauri/src/version_catalog.rs
+new file mode 100644
+index 0000000..0cc208e
+--- /dev/null
++++ b/src-tauri/src/version_catalog.rs
+@@ -0,0 +1,95 @@
++//! Version lists for the New Instance dialog: Minecraft versions, loader
++//! builds, and the Java version Mojang recommends. Read-only lookups;
++//! nothing here touches an instance.
++
++use serde::Deserialize;
++use tauri::State;
++
++use crate::commands::AppState;
++use crate::error::AppError;
++use crate::launch::loader_profile::{self, LoaderVersionOption};
++use crate::launch::manifest::{self, ManifestVersion};
++use crate::launch::neoforge;
++use crate::models::Loader;
++
++const FORGE_PROMOTIONS: &str =
++    "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
++
 +#[tauri::command]
-+pub async fn install_performance_pack(
++pub async fn list_minecraft_versions(
 +    state: State<'_, AppState>,
-+    instance_id: String,
-+) -> Result<PackResult, AppError> {
++) -> Result<Vec<ManifestVersion>, AppError> {
++    manifest::list_versions(&state.http).await
++}
++
++/// Loader builds available for a Minecraft version. An empty list means
++/// "none published" (the dialog then falls back to "Latest", resolved at
++/// launch); an error means the lookup itself failed.
++#[tauri::command]
++pub async fn list_loader_versions(
++    state: State<'_, AppState>,
++    loader: String,
++    minecraft_version: String,
++) -> Result<Vec<LoaderVersionOption>, AppError> {
 +    if !state.network.is_online() {
 +        return Err(AppError::Offline);
 +    }
-+
-+    let first = state.instances.get(&instance_id)?;
-+    let preset = preset_for(first.loader).ok_or_else(vanilla_error)?;
-+
-+    let mut installed = Vec::new();
-+    let mut skipped = Vec::new();
-+
-+    for m in preset {
-+        // Re-read each time so dependencies installed for an earlier mod
-+        // are seen as already present.
-+        let instance = state.instances.get(&instance_id)?;
-+        if is_present(&instance, m.slug) {
-+            skipped.push(PackSkip {
-+                label: m.label.to_string(),
-+                reason: "Already installed".to_string(),
-+            });
-+            continue;
++    match loader.to_ascii_lowercase().as_str() {
++        "fabric" => {
++            loader_profile::list_loader_versions(&state.http, Loader::Fabric, &minecraft_version)
++                .await
 +        }
++        "quilt" => {
++            loader_profile::list_loader_versions(&state.http, Loader::Quilt, &minecraft_version)
++                .await
++        }
++        "neoforge" => neoforge::list_neoforge_versions(&state.http, &minecraft_version).await,
++        "forge" => Ok(list_forge_versions(&state.http, &minecraft_version).await),
++        _ => Ok(Vec::new()),
++    }
++}
 +
-+        match install_one(&state, &instance, m.slug).await {
-+            Ok(mut names) => installed.append(&mut names),
-+            Err(AppError::NoCompatibleVersion) => skipped.push(PackSkip {
-+                label: m.label.to_string(),
-+                reason: format!(
-+                    "No build for Minecraft {} on {} yet",
-+                    instance.minecraft_version,
-+                    instance.loader.label()
-+                ),
-+            }),
-+            Err(e) => skipped.push(PackSkip {
-+                label: m.label.to_string(),
-+                reason: e.to_string(),
-+            }),
++#[tauri::command]
++pub async fn recommended_java(
++    state: State<'_, AppState>,
++    minecraft_version: String,
++) -> Result<Option<u32>, AppError> {
++    manifest::recommended_java(&state.http, &minecraft_version).await
++}
++
++#[derive(Debug, Deserialize)]
++struct ForgePromotions {
++    promos: std::collections::HashMap<String, String>,
++}
++
++/// Forge only publishes a "recommended" and a "latest" build per
++/// Minecraft version in its promotions file. Best effort: any failure
++/// yields an empty list rather than an error, since Forge launching isn't
++/// implemented and this only feeds a dropdown.
++async fn list_forge_versions(
++    client: &reqwest::Client,
++    minecraft_version: &str,
++) -> Vec<LoaderVersionOption> {
++    let Ok(resp) = client.get(FORGE_PROMOTIONS).send().await else {
++        return Vec::new();
++    };
++    let Ok(resp) = resp.error_for_status() else {
++        return Vec::new();
++    };
++    let Ok(promos) = resp.json::<ForgePromotions>().await else {
++        return Vec::new();
++    };
++
++    let mut out: Vec<LoaderVersionOption> = Vec::new();
++    for suffix in ["latest", "recommended"] {
++        if let Some(version) = promos.promos.get(&format!("{minecraft_version}-{suffix}")) {
++            if !out.iter().any(|o| &o.version == version) {
++                out.push(LoaderVersionOption {
++                    version: version.clone(),
++                    stable: suffix == "recommended",
++                });
++            }
 +        }
 +    }
-+
-+    Ok(PackResult {
-+        installed,
-+        skipped,
-+        instance: state.instances.get(&instance_id)?,
-+    })
++    out
 +}
-+
-+fn vanilla_error() -> AppError {
-+    AppError::Internal(
-+        "The Performance Pack needs a modded instance (Fabric, Quilt, NeoForge or Forge). \
-+         Vanilla Minecraft can't load mods."
-+            .to_string(),
-+    )
-+}
-+
-+/// Installs one Modrinth project plus its *required* dependencies.
-+/// Optional dependencies are deliberately not pulled in: a performance
-+/// pack shouldn't quietly add extra mods. Returns the display names of
-+/// everything newly installed.
-+async fn install_one(
-+    state: &AppState,
-+    instance: &Instance,
-+    slug: &str,
-+) -> Result<Vec<String>, AppError> {
-+    // Quilt loads Fabric mods, and Modrinth lists these under "fabric".
-+    let mut probe = instance.clone();
-+    if probe.loader == Loader::Quilt {
-+        probe.loader = Loader::Fabric;
-+    }
-+
-+    let provider = state.providers.for_platform(Platform::Modrinth);
-+    let project = provider.get_project(slug).await?;
-+    let versions = provider.list_versions(&project).await?;
-+    let compat = compatibility::evaluate(&probe, &versions);
-+    let version = compat.selected_version.ok_or(AppError::NoCompatibleVersion)?;
-+
-+    let required: Vec<_> = version
-+        .dependencies
-+        .iter()
-+        .filter(|d| d.kind == DependencyKind::Required)
-+        .cloned()
-+        .collect();
-+    let dep_checks = dependencies::resolve_all(&state.providers, &probe, &required).await;
-+    if dep_checks.iter().any(|c| !c.already_installed && !c.compatible) {
-+        return Err(AppError::Internal(
-+            "a required dependency has no compatible version".to_string(),
-+        ));
-+    }
-+
-+    let instance_dir = std::path::PathBuf::from(&instance.instance_dir);
-+    let mut names = Vec::new();
-+
-+    for check in dep_checks.iter().filter(|c| !c.already_installed) {
-+        let (Some(dep_project), Some(dep_version)) =
-+            (&check.resolved_project, &check.resolved_version)
-+        else {
-+            continue;
-+        };
-+        let Some(file) = dep_version.primary_file() else {
-+            continue;
-+        };
-+        downloader::download_file(&state.http, file, &instance_dir, dep_project.content_type)
-+            .await?;
-+        record(state, &instance.id, dep_project, dep_version, &file.filename)?;
-+        names.push(dep_project.name.clone());
-+    }
-+
-+    let file = version
-+        .primary_file()
-+        .ok_or_else(|| AppError::Internal("selected version has no downloadable file".into()))?;
-+    downloader::download_file(&state.http, file, &instance_dir, project.content_type).await?;
-+    record(state, &instance.id, &project, &version, &file.filename)?;
-+    names.push(project.name.clone());
-+
-+    Ok(names)
-+}
-+
-+fn record(
-+    state: &AppState,
-+    instance_id: &str,
-+    project: &crate::models::Project,
-+    version: &crate::models::ProjectVersion,
-+    file_name: &str,
-+) -> Result<(), AppError> {
-+    state.instances.record_installed(
-+        instance_id,
-+        InstalledContent {
-+            platform: project.platform,
-+            project_id: project.id.clone(),
-+            project_slug: project.slug.clone(),
-+            content_type: project.content_type,
-+            version_id: version.id.clone(),
-+            version_number: version.version_number.clone(),
-+            file_name: file_name.to_string(),
-+        },
-+    )?;
-+    let conn = state.db.0.lock().unwrap();
-+    history::record(
-+        &conn,
-+        &project.name,
-+        project.platform,
-+        project.content_type,
-+        &version.version_number,
-+        instance_id,
-+    )?;
-+    Ok(())
-+}
-+
-+#[cfg(test)]
-+mod tests {
-+    use super::*;
-+
-+    #[test]
-+    fn matches_real_jar_names() {
-+        assert!(file_name_matches("sodium-fabric-0.6.13+mc1.21.1.jar", "sodium"));
-+        assert!(file_name_matches("sodium-neoforge-0.6.13.jar", "sodium"));
-+        assert!(file_name_matches("ferritecore-7.0.0-hotfix-fabric.jar", "ferrite-core"));
-+        assert!(file_name_matches("lithium-fabric-0.14.3.jar", "lithium"));
-+        assert!(file_name_matches("Sodium.jar", "sodium"));
-+    }
-+
-+    #[test]
-+    fn ignores_addons_with_similar_names() {
-+        assert!(!file_name_matches("sodium-extra-0.6.0.jar", "sodium"));
-+        assert!(!file_name_matches("reeses-sodium-options-1.8.jar", "sodium"));
-+        assert!(!file_name_matches("sodium-fabric.txt", "sodium"));
-+    }
-+}
-diff --git a/src/components/instances/PerformancePackPanel.tsx b/src/components/instances/PerformancePackPanel.tsx
-new file mode 100644
-index 0000000..702ebcc
---- /dev/null
-+++ b/src/components/instances/PerformancePackPanel.tsx
-@@ -0,0 +1,162 @@
-+import { useEffect, useState } from "react";
-+import { installPerformancePack, performancePackInfo } from "@/lib/tauri";
-+import type { PerformancePackEntry, PerformancePackResult, Instance } from "@/lib/types";
-+import { isAppError } from "@/lib/types";
-+import { Badge, Button } from "../shared/Primitives";
-+
-+/**
-+ * Collapsible one-click installer for well-known performance mods
-+ * (Sodium, Lithium, FerriteCore and friends). Blocklight doesn't ship its
-+ * own game client; these mods are what actually make Minecraft faster,
-+ * and the backend installs them through the normal Modrinth pipeline.
-+ * Vanilla instances get an explanation instead, since nothing can be
-+ * injected without a mod loader.
-+ */
-+export function PerformancePackPanel({
-+  instance,
-+  disabled,
-+  onInstalled,
-+}: {
-+  instance: Instance;
-+  disabled: boolean;
-+  onInstalled: () => void;
-+}) {
-+  const [open, setOpen] = useState(false);
-+  const [entries, setEntries] = useState<PerformancePackEntry[] | null>(null);
-+  const [busy, setBusy] = useState(false);
-+  const [error, setError] = useState<string | null>(null);
-+  const [result, setResult] = useState<PerformancePackResult | null>(null);
-+
-+  const vanilla = instance.loader === "minecraft";
-+
-+  // Reload the checklist when the panel opens, the instance changes, or
-+  // an install lands (instance.installed changes length).
+diff --git a/src/components/instances/NewInstanceModal.tsx b/src/components/instances/NewInstanceModal.tsx
+index c88fc17..c4a6a71 100644
+--- a/src/components/instances/NewInstanceModal.tsx
++++ b/src/components/instances/NewInstanceModal.tsx
+@@ -1,6 +1,6 @@
+-import { useState } from "react";
+-import { createInstance } from "@/lib/tauri";
+-import type { AppError, Instance, Loader } from "@/lib/types";
++import { useEffect, useMemo, useState } from "react";
++import { createInstance, listLoaderVersions, listMinecraftVersions, recommendedJava } from "@/lib/tauri";
++import type { AppError, Instance, Loader, LoaderVersionOption, McVersion } from "@/lib/types";
+ import { isAppError } from "@/lib/types";
+ import { Button } from "../shared/Primitives";
+ import { JVM_ARGS_TEXTAREA_STYLE } from "./JvmArgsEditor";
+@@ -24,12 +24,97 @@ export function NewInstanceModal({
+   const [minecraftVersion, setMinecraftVersion] = useState("");
+   const [loader, setLoader] = useState<Loader>("fabric");
+   const [loaderVersion, setLoaderVersion] = useState("");
+-  const [javaVersion, setJavaVersion] = useState("");
++  // "auto" = use Mojang's recommended Java for the chosen Minecraft version.
++  const [javaChoice, setJavaChoice] = useState("auto");
++  const [mcVersions, setMcVersions] = useState<McVersion[] | null>(null);
++  const [mcListFailed, setMcListFailed] = useState(false);
++  const [showSnapshots, setShowSnapshots] = useState(false);
++  // null while loading; [] when none are published or the lookup failed.
++  const [loaderVersions, setLoaderVersions] = useState<LoaderVersionOption[] | null>([]);
++  const [recommendedJavaMajor, setRecommendedJavaMajor] = useState<number | null>(null);
+   const [memoryMb, setMemoryMb] = useState("");
+   const [jvmArgs, setJvmArgs] = useState("");
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<AppError | null>(null);
+ 
++  // Minecraft versions, once, on open.
 +  useEffect(() => {
-+    if (!open || vanilla) return;
 +    let cancelled = false;
-+    performancePackInfo(instance.id)
++    listMinecraftVersions()
 +      .then((list) => {
-+        if (!cancelled) setEntries(list);
++        if (!cancelled) setMcVersions(list);
 +      })
-+      .catch((err) => {
-+        if (!cancelled) setError(isAppError(err) ? err.message : String(err));
++      .catch(() => {
++        if (!cancelled) setMcListFailed(true);
 +      });
 +    return () => {
 +      cancelled = true;
 +    };
-+  }, [open, vanilla, instance.id, instance.installed.length]);
++  }, []);
 +
++  const visibleVersions = useMemo(
++    () => (mcVersions ?? []).filter((v) => showSnapshots || v.kind === "release"),
++    [mcVersions, showSnapshots]
++  );
++
++  // Pick the newest release by default, and recover if the selected
++  // version disappears (snapshots toggled off).
 +  useEffect(() => {
-+    setResult(null);
-+    setError(null);
-+    setEntries(null);
-+  }, [instance.id]);
++    if (!mcVersions) return;
++    if (visibleVersions.some((v) => v.id === minecraftVersion)) return;
++    const newest = mcVersions.find((v) => v.kind === "release") ?? visibleVersions[0];
++    setMinecraftVersion(newest ? newest.id : "");
++  }, [mcVersions, visibleVersions, minecraftVersion]);
 +
-+  async function install() {
-+    setBusy(true);
-+    setError(null);
-+    setResult(null);
-+    try {
-+      const res = await installPerformancePack(instance.id);
-+      setResult(res);
-+      onInstalled();
-+    } catch (err) {
-+      setError(isAppError(err) ? err.message : String(err));
-+    } finally {
-+      setBusy(false);
++  // Loader builds for the chosen loader + Minecraft version.
++  useEffect(() => {
++    setLoaderVersion("");
++    if (loader === "minecraft" || !minecraftVersion.trim()) {
++      setLoaderVersions([]);
++      return;
 +    }
-+  }
++    let cancelled = false;
++    setLoaderVersions(null);
++    const timer = setTimeout(() => {
++      listLoaderVersions(loader, minecraftVersion.trim())
++        .then((list) => {
++          if (!cancelled) setLoaderVersions(list);
++        })
++        .catch(() => {
++          if (!cancelled) setLoaderVersions([]);
++        });
++    }, 250);
++    return () => {
++      cancelled = true;
++      clearTimeout(timer);
++    };
++  }, [loader, minecraftVersion]);
 +
-+  const missing = entries?.filter((e) => !e.alreadyInstalled).length ?? 0;
++  // Mojang's recommended Java for the chosen Minecraft version.
++  useEffect(() => {
++    setRecommendedJavaMajor(null);
++    setJavaChoice("auto");
++    if (!minecraftVersion.trim()) return;
++    let cancelled = false;
++    const timer = setTimeout(() => {
++      recommendedJava(minecraftVersion.trim())
++        .then((major) => {
++          if (!cancelled) setRecommendedJavaMajor(major);
++        })
++        .catch(() => {});
++    }, 250);
++    return () => {
++      cancelled = true;
++      clearTimeout(timer);
++    };
++  }, [minecraftVersion]);
 +
-+  return (
-+    <div style={{ marginTop: 14 }}>
-+      <Button variant="ghost" size="sm" onClick={() => setOpen((o) => !o)}>
-+        {open ? "Hide" : "Show"} Performance Pack
-+      </Button>
++  const javaOptions = useMemo(() => {
++    const majors = new Set([8, 17, 21, 25]);
++    if (recommendedJavaMajor) majors.add(recommendedJavaMajor);
++    return [...majors].sort((a, b) => a - b);
++  }, [recommendedJavaMajor]);
 +
-+      {open && (
-+        <div style={{ marginTop: 8 }}>
-+          {vanilla ? (
-+            <p className="page-subtitle">
-+              Performance mods need a mod loader. Create a Fabric or NeoForge instance for this
-+              Minecraft version and the pack can be installed there.
-+            </p>
-+          ) : (
-+            <>
-+              <p className="page-subtitle">
-+                Installs well-known optimization mods from Modrinth
-+                {instance.loader === "quilt" ? " (Fabric builds, which Quilt can load)" : ""}. Any
-+                without a build for Minecraft {instance.minecraftVersion} yet are skipped.
-+              </p>
-+
-+              {entries && (
-+                <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
-+                  {entries.map((e) => (
-+                    <li
-+                      key={e.slug}
-+                      style={{
-+                        display: "flex",
-+                        justifyContent: "space-between",
-+                        gap: 12,
-+                        padding: "6px 0",
-+                      }}
-+                    >
-+                      <span>
-+                        <strong>{e.label}</strong>
-+                        <span className="page-subtitle"> — {e.purpose}</span>
-+                      </span>
-+                      {e.alreadyInstalled && <Badge tone="success">Installed</Badge>}
-+                    </li>
-+                  ))}
-+                </ul>
-+              )}
-+
-+              <div style={{ marginTop: 10 }}>
-+                <Button
-+                  variant="primary"
-+                  size="sm"
-+                  disabled={disabled || busy || !entries || missing === 0}
-+                  onClick={() => void install()}
+   const canSubmit = name.trim().length > 0 && minecraftVersion.trim().length > 0 && !busy;
+ 
+   async function handleSubmit() {
+@@ -42,7 +127,7 @@ export function NewInstanceModal({
+         minecraftVersion,
+         loader,
+         loaderVersion: loaderVersion.trim() || null,
+-        javaMajorVersion: javaVersion.trim() ? Number(javaVersion.trim()) : null,
++        javaMajorVersion: javaChoice === "auto" ? recommendedJavaMajor : Number(javaChoice),
+         memoryMb: memoryMb.trim() ? Number(memoryMb.trim()) : null,
+         jvmArgs: jvmArgs.trim() || null,
+       });
+@@ -98,13 +183,48 @@ export function NewInstanceModal({
+               <label className="field-label" htmlFor="instance-mc-version">
+                 Minecraft version
+               </label>
+-              <input
+-                id="instance-mc-version"
+-                className="text-input"
+-                placeholder="1.21.1"
+-                value={minecraftVersion}
+-                onChange={(e) => setMinecraftVersion(e.target.value)}
+-              />
++              {mcListFailed ? (
++                <input
++                  id="instance-mc-version"
++                  className="text-input"
++                  placeholder="1.21.1"
++                  value={minecraftVersion}
++                  onChange={(e) => setMinecraftVersion(e.target.value)}
++                />
++              ) : (
++                <select
++                  id="instance-mc-version"
++                  className="text-input"
++                  value={minecraftVersion}
++                  disabled={!mcVersions}
++                  onChange={(e) => setMinecraftVersion(e.target.value)}
 +                >
-+                  {busy
-+                    ? "Installing…"
-+                    : entries && missing === 0
-+                      ? "Everything installed"
-+                      : "Install Performance Pack"}
-+                </Button>
-+              </div>
-+
-+              {disabled && (
-+                <p className="page-subtitle" style={{ marginTop: 6 }}>
-+                  Stop the game before installing mods.
++                  {!mcVersions && <option value="">Loading…</option>}
++                  {visibleVersions.map((v) => (
++                    <option key={v.id} value={v.id}>
++                      {v.id}
++                      {v.kind === "snapshot" ? " (snapshot)" : ""}
++                    </option>
++                  ))}
++                </select>
++              )}
++              {mcListFailed ? (
++                <p className="page-subtitle" style={{ marginTop: 4 }}>
++                  Couldn't load the version list. Type a version instead.
++                </p>
++              ) : (
++                <label
++                  className="page-subtitle"
++                  style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}
++                >
++                  <input
++                    type="checkbox"
++                    checked={showSnapshots}
++                    onChange={(e) => setShowSnapshots(e.target.checked)}
++                  />
++                  Show snapshots
++                </label>
++              )}
+             </div>
+             <div style={{ flex: 1 }}>
+               <label className="field-label" htmlFor="instance-loader">
+@@ -128,28 +248,56 @@ export function NewInstanceModal({
+           <div style={{ display: "flex", gap: 10 }}>
+             <div style={{ flex: 1 }}>
+               <label className="field-label" htmlFor="instance-loader-version">
+-                Loader version <span style={{ opacity: 0.6 }}>(optional)</span>
++                Loader version
+               </label>
+-              <input
++              <select
+                 id="instance-loader-version"
+                 className="text-input"
+-                placeholder="0.16.9"
+                 value={loaderVersion}
++                disabled={loader === "minecraft" || loaderVersions === null}
+                 onChange={(e) => setLoaderVersion(e.target.value)}
+-              />
++              >
++                {loader === "minecraft" ? (
++                  <option value="">None needed</option>
++                ) : loaderVersions === null ? (
++                  <option value="">Loading…</option>
++                ) : (
++                  <>
++                    <option value="">Latest (recommended)</option>
++                    {loaderVersions.map((v) => (
++                      <option key={v.version} value={v.version}>
++                        {v.version}
++                        {v.stable ? "" : " (beta)"}
++                      </option>
++                    ))}
++                  </>
++                )}
++              </select>
++              {loader !== "minecraft" && loaderVersions !== null && loaderVersions.length === 0 && (
++                <p className="page-subtitle" style={{ marginTop: 4 }}>
++                  No builds listed for this Minecraft version. The latest is picked at launch.
 +                </p>
 +              )}
-+            </>
-+          )}
-+
-+          {error && (
-+            <p className="state-body" style={{ color: "var(--danger)", marginTop: 8 }}>
-+              {error}
-+            </p>
-+          )}
-+
-+          {result && (
-+            <div style={{ marginTop: 8 }}>
-+              {result.installed.length > 0 && (
-+                <p className="state-body">Installed: {result.installed.join(", ")}.</p>
-+              )}
-+              {result.skipped
-+                .filter((s) => s.reason !== "Already installed")
-+                .map((s) => (
-+                  <p key={s.label} className="page-subtitle">
-+                    {s.label}: {s.reason}
-+                  </p>
+             </div>
+             <div style={{ flex: 1 }}>
+               <label className="field-label" htmlFor="instance-java">
+-                Java version <span style={{ opacity: 0.6 }}>(optional)</span>
++                Java version
+               </label>
+-              <input
++              <select
+                 id="instance-java"
+                 className="text-input"
+-                placeholder="21"
+-                inputMode="numeric"
+-                value={javaVersion}
+-                onChange={(e) => setJavaVersion(e.target.value.replace(/[^0-9]/g, ""))}
+-              />
++                value={javaChoice}
++                onChange={(e) => setJavaChoice(e.target.value)}
++              >
++                <option value="auto">
++                  Recommended{recommendedJavaMajor ? ` (Java ${recommendedJavaMajor})` : ""}
++                </option>
++                {javaOptions.map((major) => (
++                  <option key={major} value={String(major)}>
++                    Java {major}
++                  </option>
 +                ))}
-+            </div>
-+          )}
-+        </div>
-+      )}
-+    </div>
-+  );
-+}
++              </select>
+             </div>
+           </div>
+ 
 diff --git a/src/lib/tauri.ts b/src/lib/tauri.ts
-index 0895d94..b65dcd5 100644
+index b65dcd5..5276bb3 100644
 --- a/src/lib/tauri.ts
 +++ b/src/lib/tauri.ts
-@@ -17,6 +17,8 @@ import type {
+@@ -14,6 +14,8 @@ import type {
+   InstallSummary,
+   InstalledItem,
+   Loader,
++  LoaderVersionOption,
++  McVersion,
    MsaPrompt,
    OfflineProfile,
    OfflineReadiness,
-+  PerformancePackEntry,
-+  PerformancePackResult,
-   Platform,
-   PrepareProgress,
-   Project,
-@@ -175,6 +177,14 @@ export function isInstanceRunning(instanceId: string): Promise<boolean> {
+@@ -177,6 +179,22 @@ export function isInstanceRunning(instanceId: string): Promise<boolean> {
    return invoke("is_instance_running", { instanceId });
  }
  
-+export function performancePackInfo(instanceId: string): Promise<PerformancePackEntry[]> {
-+  return invoke("performance_pack_info", { instanceId });
++export function listMinecraftVersions(): Promise<McVersion[]> {
++  return invoke("list_minecraft_versions");
 +}
 +
-+export function installPerformancePack(instanceId: string): Promise<PerformancePackResult> {
-+  return invoke("install_performance_pack", { instanceId });
++export function listLoaderVersions(
++  loader: Loader,
++  minecraftVersion: string
++): Promise<LoaderVersionOption[]> {
++  return invoke("list_loader_versions", { loader, minecraftVersion });
 +}
 +
- export function getAccountState(): Promise<AccountState> {
-   return invoke("get_account_state");
++/** The Java major version Mojang says this Minecraft version needs, if it says. */
++export function recommendedJava(minecraftVersion: string): Promise<number | null> {
++  return invoke("recommended_java", { minecraftVersion });
++}
++
+ export function performancePackInfo(instanceId: string): Promise<PerformancePackEntry[]> {
+   return invoke("performance_pack_info", { instanceId });
  }
 diff --git a/src/lib/types.ts b/src/lib/types.ts
-index a557929..eec9c93 100644
+index eec9c93..7e0bbd3 100644
 --- a/src/lib/types.ts
 +++ b/src/lib/types.ts
-@@ -240,3 +240,18 @@ export function isAppError(value: unknown): value is AppError {
-     "message" in value
-   );
+@@ -255,3 +255,17 @@ export interface PerformancePackResult {
+   skipped: { label: string; reason: string }[];
+   instance: Instance;
  }
 +
-+/** One mod in the Performance Pack for an instance's loader (src-tauri/src/performance.rs). */
-+export interface PerformancePackEntry {
-+  slug: string;
-+  label: string;
-+  purpose: string;
-+  alreadyInstalled: boolean;
++/** One row of Mojang's version list (src-tauri/src/launch/manifest.rs). */
++export interface McVersion {
++  id: string;
++  /** "release", "snapshot", "old_beta" or "old_alpha". */
++  kind: string;
++  releaseTime: string;
 +}
 +
-+export interface PerformancePackResult {
-+  /** Display names of everything newly installed, dependencies included. */
-+  installed: string[];
-+  skipped: { label: string; reason: string }[];
-+  instance: Instance;
++/** One selectable loader build (src-tauri/src/version_catalog.rs). */
++export interface LoaderVersionOption {
++  version: string;
++  stable: boolean;
 +}
-diff --git a/src/pages/Home.tsx b/src/pages/Home.tsx
-index 6dd620d..90e7369 100644
---- a/src/pages/Home.tsx
-+++ b/src/pages/Home.tsx
-@@ -11,6 +11,7 @@ import { WorldsList } from "@/components/history/WorldsList";
- import { NewInstanceModal } from "@/components/instances/NewInstanceModal";
- import { LaunchPanel } from "@/components/instances/LaunchPanel";
- import { JvmArgsEditor } from "@/components/instances/JvmArgsEditor";
-+import { PerformancePackPanel } from "@/components/instances/PerformancePackPanel";
- import { RemoveInstanceModal } from "@/components/instances/RemoveInstanceModal";
- import { useLinkInstallFlow } from "@/hooks/useLinkInstallFlow";
- import { useLaunch } from "@/hooks/useLaunch";
-@@ -193,6 +194,8 @@ function InstanceTile({
-         )}
-       </div>
- 
-+      <PerformancePackPanel instance={instance} disabled={busy} onInstalled={onUpdated} />
-+
-       <JvmArgsEditor instance={instance} disabled={busy} onSaved={onUpdated} />
- 
-       <LaunchPanel
