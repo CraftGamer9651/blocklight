@@ -18,6 +18,7 @@ mod providers;
 mod skin_core;
 mod skins;
 mod url_resolver;
+mod version_catalog;
 
 use std::sync::Arc;
 
@@ -109,6 +110,9 @@ pub fn run() {
             commands::delete_offline_profile,
             commands::switch_to_microsoft,
             commands::sign_in_with_microsoft,
+            version_catalog::list_minecraft_versions,
+            version_catalog::list_loader_versions,
+            version_catalog::recommended_java,
             performance::performance_pack_info,
             performance::install_performance_pack,
             commands::set_curseforge_api_key,

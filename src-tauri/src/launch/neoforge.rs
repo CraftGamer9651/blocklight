@@ -133,6 +133,43 @@ struct NeoForgeVersionList {
     versions: Vec<String>,
 }
 
+/// Every NeoForge build for a Minecraft version, newest first. Versions
+/// with a `-` suffix (beta/alpha) are marked unstable. Empty when the
+/// Minecraft version has no NeoForge numbering (anything not `1.x`).
+pub async fn list_neoforge_versions(
+    client: &reqwest::Client,
+    minecraft_version: &str,
+) -> Result<Vec<super::loader_profile::LoaderVersionOption>, AppError> {
+    let Ok(prefix) = mc_version_to_neoforge_prefix(minecraft_version) else {
+        return Ok(Vec::new());
+    };
+
+    let url = format!("{NEOFORGE_MAVEN}/api/maven/versions/releases/net/neoforged/neoforge");
+    let list: NeoForgeVersionList = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(AppError::from)?
+        .json()
+        .await?;
+
+    let mut versions: Vec<String> = list
+        .versions
+        .into_iter()
+        .filter(|v| v.starts_with(&prefix))
+        .collect();
+    versions.sort_by(|a, b| compare_version_strings(b, a));
+
+    Ok(versions
+        .into_iter()
+        .map(|version| super::loader_profile::LoaderVersionOption {
+            stable: !version.contains('-'),
+            version,
+        })
+        .collect())
+}
+
 async fn resolve_latest_neoforge_version(
     client: &reqwest::Client,
     minecraft_version: &str,

@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { createInstance } from "@/lib/tauri";
-import type { AppError, Instance, Loader } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
+import { createInstance, listLoaderVersions, listMinecraftVersions, recommendedJava } from "@/lib/tauri";
+import type { AppError, Instance, Loader, LoaderVersionOption, McVersion } from "@/lib/types";
 import { isAppError } from "@/lib/types";
 import { Button } from "../shared/Primitives";
 import { JVM_ARGS_TEXTAREA_STYLE } from "./JvmArgsEditor";
@@ -24,11 +24,96 @@ export function NewInstanceModal({
   const [minecraftVersion, setMinecraftVersion] = useState("");
   const [loader, setLoader] = useState<Loader>("fabric");
   const [loaderVersion, setLoaderVersion] = useState("");
-  const [javaVersion, setJavaVersion] = useState("");
+  // "auto" = use Mojang's recommended Java for the chosen Minecraft version.
+  const [javaChoice, setJavaChoice] = useState("auto");
+  const [mcVersions, setMcVersions] = useState<McVersion[] | null>(null);
+  const [mcListFailed, setMcListFailed] = useState(false);
+  const [showSnapshots, setShowSnapshots] = useState(false);
+  // null while loading; [] when none are published or the lookup failed.
+  const [loaderVersions, setLoaderVersions] = useState<LoaderVersionOption[] | null>([]);
+  const [recommendedJavaMajor, setRecommendedJavaMajor] = useState<number | null>(null);
   const [memoryMb, setMemoryMb] = useState("");
   const [jvmArgs, setJvmArgs] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError | null>(null);
+
+  // Minecraft versions, once, on open.
+  useEffect(() => {
+    let cancelled = false;
+    listMinecraftVersions()
+      .then((list) => {
+        if (!cancelled) setMcVersions(list);
+      })
+      .catch(() => {
+        if (!cancelled) setMcListFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const visibleVersions = useMemo(
+    () => (mcVersions ?? []).filter((v) => showSnapshots || v.kind === "release"),
+    [mcVersions, showSnapshots]
+  );
+
+  // Pick the newest release by default, and recover if the selected
+  // version disappears (snapshots toggled off).
+  useEffect(() => {
+    if (!mcVersions) return;
+    if (visibleVersions.some((v) => v.id === minecraftVersion)) return;
+    const newest = mcVersions.find((v) => v.kind === "release") ?? visibleVersions[0];
+    setMinecraftVersion(newest ? newest.id : "");
+  }, [mcVersions, visibleVersions, minecraftVersion]);
+
+  // Loader builds for the chosen loader + Minecraft version.
+  useEffect(() => {
+    setLoaderVersion("");
+    if (loader === "minecraft" || !minecraftVersion.trim()) {
+      setLoaderVersions([]);
+      return;
+    }
+    let cancelled = false;
+    setLoaderVersions(null);
+    const timer = setTimeout(() => {
+      listLoaderVersions(loader, minecraftVersion.trim())
+        .then((list) => {
+          if (!cancelled) setLoaderVersions(list);
+        })
+        .catch(() => {
+          if (!cancelled) setLoaderVersions([]);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [loader, minecraftVersion]);
+
+  // Mojang's recommended Java for the chosen Minecraft version.
+  useEffect(() => {
+    setRecommendedJavaMajor(null);
+    setJavaChoice("auto");
+    if (!minecraftVersion.trim()) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      recommendedJava(minecraftVersion.trim())
+        .then((major) => {
+          if (!cancelled) setRecommendedJavaMajor(major);
+        })
+        .catch(() => {});
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [minecraftVersion]);
+
+  const javaOptions = useMemo(() => {
+    const majors = new Set([8, 17, 21, 25]);
+    if (recommendedJavaMajor) majors.add(recommendedJavaMajor);
+    return [...majors].sort((a, b) => a - b);
+  }, [recommendedJavaMajor]);
 
   const canSubmit = name.trim().length > 0 && minecraftVersion.trim().length > 0 && !busy;
 
@@ -42,7 +127,7 @@ export function NewInstanceModal({
         minecraftVersion,
         loader,
         loaderVersion: loaderVersion.trim() || null,
-        javaMajorVersion: javaVersion.trim() ? Number(javaVersion.trim()) : null,
+        javaMajorVersion: javaChoice === "auto" ? recommendedJavaMajor : Number(javaChoice),
         memoryMb: memoryMb.trim() ? Number(memoryMb.trim()) : null,
         jvmArgs: jvmArgs.trim() || null,
       });
@@ -98,13 +183,48 @@ export function NewInstanceModal({
               <label className="field-label" htmlFor="instance-mc-version">
                 Minecraft version
               </label>
-              <input
-                id="instance-mc-version"
-                className="text-input"
-                placeholder="1.21.1"
-                value={minecraftVersion}
-                onChange={(e) => setMinecraftVersion(e.target.value)}
-              />
+              {mcListFailed ? (
+                <input
+                  id="instance-mc-version"
+                  className="text-input"
+                  placeholder="1.21.1"
+                  value={minecraftVersion}
+                  onChange={(e) => setMinecraftVersion(e.target.value)}
+                />
+              ) : (
+                <select
+                  id="instance-mc-version"
+                  className="text-input"
+                  value={minecraftVersion}
+                  disabled={!mcVersions}
+                  onChange={(e) => setMinecraftVersion(e.target.value)}
+                >
+                  {!mcVersions && <option value="">Loading…</option>}
+                  {visibleVersions.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.id}
+                      {v.kind === "snapshot" ? " (snapshot)" : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {mcListFailed ? (
+                <p className="page-subtitle" style={{ marginTop: 4 }}>
+                  Couldn't load the version list. Type a version instead.
+                </p>
+              ) : (
+                <label
+                  className="page-subtitle"
+                  style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showSnapshots}
+                    onChange={(e) => setShowSnapshots(e.target.checked)}
+                  />
+                  Show snapshots
+                </label>
+              )}
             </div>
             <div style={{ flex: 1 }}>
               <label className="field-label" htmlFor="instance-loader">
@@ -128,28 +248,56 @@ export function NewInstanceModal({
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}>
               <label className="field-label" htmlFor="instance-loader-version">
-                Loader version <span style={{ opacity: 0.6 }}>(optional)</span>
+                Loader version
               </label>
-              <input
+              <select
                 id="instance-loader-version"
                 className="text-input"
-                placeholder="0.16.9"
                 value={loaderVersion}
+                disabled={loader === "minecraft" || loaderVersions === null}
                 onChange={(e) => setLoaderVersion(e.target.value)}
-              />
+              >
+                {loader === "minecraft" ? (
+                  <option value="">None needed</option>
+                ) : loaderVersions === null ? (
+                  <option value="">Loading…</option>
+                ) : (
+                  <>
+                    <option value="">Latest (recommended)</option>
+                    {loaderVersions.map((v) => (
+                      <option key={v.version} value={v.version}>
+                        {v.version}
+                        {v.stable ? "" : " (beta)"}
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
+              {loader !== "minecraft" && loaderVersions !== null && loaderVersions.length === 0 && (
+                <p className="page-subtitle" style={{ marginTop: 4 }}>
+                  No builds listed for this Minecraft version. The latest is picked at launch.
+                </p>
+              )}
             </div>
             <div style={{ flex: 1 }}>
               <label className="field-label" htmlFor="instance-java">
-                Java version <span style={{ opacity: 0.6 }}>(optional)</span>
+                Java version
               </label>
-              <input
+              <select
                 id="instance-java"
                 className="text-input"
-                placeholder="21"
-                inputMode="numeric"
-                value={javaVersion}
-                onChange={(e) => setJavaVersion(e.target.value.replace(/[^0-9]/g, ""))}
-              />
+                value={javaChoice}
+                onChange={(e) => setJavaChoice(e.target.value)}
+              >
+                <option value="auto">
+                  Recommended{recommendedJavaMajor ? ` (Java ${recommendedJavaMajor})` : ""}
+                </option>
+                {javaOptions.map((major) => (
+                  <option key={major} value={String(major)}>
+                    Java {major}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 

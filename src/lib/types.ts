@@ -255,3 +255,17 @@ export interface PerformancePackResult {
   skipped: { label: string; reason: string }[];
   instance: Instance;
 }
+
+/** One row of Mojang's version list (src-tauri/src/launch/manifest.rs). */
+export interface McVersion {
+  id: string;
+  /** "release", "snapshot", "old_beta" or "old_alpha". */
+  kind: string;
+  releaseTime: string;
+}
+
+/** One selectable loader build (src-tauri/src/version_catalog.rs). */
+export interface LoaderVersionOption {
+  version: string;
+  stable: boolean;
+}

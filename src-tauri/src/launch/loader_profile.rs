@@ -52,6 +52,45 @@ struct LoaderBuildInfo {
     stable: bool,
 }
 
+/// One selectable loader build for the New Instance dropdown.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderVersionOption {
+    pub version: String,
+    pub stable: bool,
+}
+
+/// Every Fabric/Quilt loader build published for a Minecraft version,
+/// newest first (the meta API's own order). Empty when the loader doesn't
+/// support that Minecraft version.
+pub async fn list_loader_versions(
+    client: &reqwest::Client,
+    loader: Loader,
+    minecraft_version: &str,
+) -> Result<Vec<LoaderVersionOption>, AppError> {
+    let meta = meta_for(loader)?;
+    let url = format!("{}{}/{}", meta.base, meta.list_prefix, minecraft_version);
+    let resp = client.get(&url).send().await?;
+    if matches!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::BAD_REQUEST
+    ) {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<LoaderVersionEntry> = resp
+        .error_for_status()
+        .map_err(AppError::from)?
+        .json()
+        .await?;
+    Ok(entries
+        .into_iter()
+        .map(|e| LoaderVersionOption {
+            version: e.loader.version,
+            stable: e.loader.stable,
+        })
+        .collect())
+}
+
 async fn resolve_loader_version(
     client: &reqwest::Client,
     meta: &LoaderMeta,

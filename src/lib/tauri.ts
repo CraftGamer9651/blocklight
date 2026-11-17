@@ -14,6 +14,8 @@ import type {
   InstallSummary,
   InstalledItem,
   Loader,
+  LoaderVersionOption,
+  McVersion,
   MsaPrompt,
   OfflineProfile,
   OfflineReadiness,
@@ -175,6 +177,22 @@ export function stopInstance(instanceId: string): Promise<void> {
 
 export function isInstanceRunning(instanceId: string): Promise<boolean> {
   return invoke("is_instance_running", { instanceId });
+}
+
+export function listMinecraftVersions(): Promise<McVersion[]> {
+  return invoke("list_minecraft_versions");
+}
+
+export function listLoaderVersions(
+  loader: Loader,
+  minecraftVersion: string
+): Promise<LoaderVersionOption[]> {
+  return invoke("list_loader_versions", { loader, minecraftVersion });
+}
+
+/** The Java major version Mojang says this Minecraft version needs, if it says. */
+export function recommendedJava(minecraftVersion: string): Promise<number | null> {
+  return invoke("recommended_java", { minecraftVersion });
 }
 
 export function performancePackInfo(instanceId: string): Promise<PerformancePackEntry[]> {
