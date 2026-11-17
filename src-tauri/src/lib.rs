@@ -7,6 +7,7 @@ mod error;
 mod history;
 mod instances;
 mod launch;
+mod local_content;
 mod models;
 mod msa;
 mod network_monitor;
@@ -30,6 +31,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let db = db::open().expect("failed to open local database");
@@ -75,6 +77,10 @@ pub fn run() {
             commands::set_instance_jvm_args,
             commands::open_instance_folder,
             commands::remove_instance,
+            commands::list_installed_content,
+            commands::remove_installed_content,
+            commands::add_local_content,
+            commands::open_content_folder,
             commands::get_discord_presence_status,
             commands::set_discord_presence_enabled,
             commands::get_skin_status,

@@ -36,6 +36,27 @@ export interface Instance {
   installed: InstalledContent[];
 }
 
+/** An entry in an instance's mods/resourcepacks/shaderpacks folder (see src-tauri/src/local_content.rs). */
+export interface InstalledItem {
+  fileName: string;
+  /** Resource and shader packs may be unzipped folders. */
+  isFolder: boolean;
+  /** Null for folders. */
+  sizeBytes: number | null;
+  modified: string | null;
+  /** Set when Blocklight installed it from a provider; null if added by hand. */
+  platform: Platform | null;
+  projectSlug: string | null;
+  versionNumber: string | null;
+}
+
+export interface AddResult {
+  added: { fileName: string; warning: string | null }[];
+  skipped: { fileName: string; reason: string }[];
+  /** The file picker was dismissed without choosing anything. */
+  cancelled: boolean;
+}
+
 export interface Project {
   platform: Platform;
   id: string;

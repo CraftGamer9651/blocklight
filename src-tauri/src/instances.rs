@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::db::app_data_dir;
 use crate::error::AppError;
-use crate::models::{InstalledContent, Instance, Loader};
+use crate::models::{ContentType, InstalledContent, Instance, Loader};
 
 /// Full instance/world/Java management (downloading Minecraft versions,
 /// installing loaders, provisioning Java runtimes) is its own large
@@ -92,6 +92,28 @@ impl InstanceStore {
                 .installed
                 .retain(|c| c.project_id != content.project_id);
             instance.installed.push(content);
+        }
+        self.persist()
+    }
+
+    /// Drops the install record for a file that was deleted from the
+    /// instance, so "already installed" detection doesn't keep reporting
+    /// a mod that's no longer there. A no-op if nothing matches.
+    pub fn forget_installed_file(
+        &self,
+        instance_id: &str,
+        content_type: ContentType,
+        file_name: &str,
+    ) -> Result<(), AppError> {
+        {
+            let mut guard = self.instances.lock().unwrap();
+            let instance = guard
+                .iter_mut()
+                .find(|i| i.id == instance_id)
+                .ok_or_else(|| AppError::Internal(format!("unknown instance: {instance_id}")))?;
+            instance
+                .installed
+                .retain(|c| !(c.content_type == content_type && c.file_name == file_name));
         }
         self.persist()
     }

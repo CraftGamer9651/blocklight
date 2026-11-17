@@ -5,6 +5,7 @@ import { listTrendingModrinth, searchContent } from "@/lib/tauri";
 import { contentTypeLabel, platformLabel } from "@/lib/format";
 import type { ContentType, Project } from "@/lib/types";
 import { Badge, Button, Spinner } from "@/components/shared/Primitives";
+import { InstalledContent } from "@/components/mods/InstalledContent";
 import { PasteLinkPanel } from "@/components/link-import/PasteLinkPanel";
 import { LinkFlowResult } from "@/components/link-import/LinkFlowResult";
 import { useLinkInstallFlow } from "@/hooks/useLinkInstallFlow";
@@ -42,7 +43,10 @@ export function ContentLibraryPage({
   instanceId: string | null;
 }) {
   const meta = PAGE_META[contentType];
-  const flow = useLinkInstallFlow(instanceId);
+  // Bumped after each successful link install so the "Installed mods"
+  // list picks up the new file.
+  const [installTick, setInstallTick] = useState(0);
+  const flow = useLinkInstallFlow(instanceId, () => setInstallTick((n) => n + 1));
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Project[] | null>(null);
@@ -97,6 +101,14 @@ export function ContentLibraryPage({
           <p className="page-subtitle">{meta.subtitle}</p>
         </div>
       </div>
+
+      {contentType !== "modpack" && (
+        <InstalledContent
+          contentType={contentType}
+          instanceId={instanceId}
+          refreshKey={installTick}
+        />
+      )}
 
       <div className="input-row">
         <input

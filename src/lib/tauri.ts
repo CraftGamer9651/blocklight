@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountState,
+  AddResult,
   SkinStatus,
   DiscordPresenceStatus,
   ConnectivityState,
@@ -11,6 +12,7 @@ import type {
   Instance,
   InstallHistoryEntry,
   InstallSummary,
+  InstalledItem,
   Loader,
   MsaPrompt,
   OfflineProfile,
@@ -71,6 +73,36 @@ export function setInstanceJvmArgs(
   jvmArgs: string | null
 ): Promise<Instance> {
   return invoke("set_instance_jvm_args", { instanceId, jvmArgs });
+}
+
+/** What's in the instance's mods, resourcepacks or shaderpacks folder. */
+export function listInstalledContent(
+  instanceId: string,
+  contentType: ContentType
+): Promise<InstalledItem[]> {
+  return invoke("list_installed_content", { instanceId, contentType });
+}
+
+/** Permanently deletes one entry (file or pack folder) from the instance. */
+export function removeInstalledContent(
+  instanceId: string,
+  contentType: ContentType,
+  fileName: string
+): Promise<void> {
+  return invoke("remove_installed_content", { instanceId, contentType, fileName });
+}
+
+/** Opens a native file picker and copies the chosen .jar/.zip files into the instance. */
+export function addLocalContent(
+  instanceId: string,
+  contentType: ContentType
+): Promise<AddResult> {
+  return invoke("add_local_content", { instanceId, contentType });
+}
+
+/** Opens the instance's mods/resourcepacks/shaderpacks folder in the file manager. */
+export function openContentFolder(instanceId: string, contentType: ContentType): Promise<void> {
+  return invoke("open_content_folder", { instanceId, contentType });
 }
 
 export function validateLink(

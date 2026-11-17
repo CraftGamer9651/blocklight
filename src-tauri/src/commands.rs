@@ -11,6 +11,7 @@ use crate::error::AppError;
 use crate::history;
 use crate::instances::{self, InstanceStore, OfflineReadiness, WorldSummary};
 use crate::launch::{self, process::RunningProcesses};
+use crate::local_content::{self, AddResult, InstalledItem};
 use crate::models::{
     AccountState, ActiveAccountKind, ConnectivityState, ContentType, Instance,
     InstallHistoryEntry, InstalledContent, Loader, OfflineProfile, Platform, Project,
@@ -167,6 +168,127 @@ pub fn set_instance_jvm_args(
 ) -> Result<Instance, AppError> {
     let jvm_args = normalize_jvm_args(jvm_args)?;
     state.instances.set_jvm_args(&instance_id, jvm_args)
+}
+
+// ---------------------------------------------------------------------
+// Installed mods / resource packs / shader packs
+// ---------------------------------------------------------------------
+
+/// What's currently in the instance's mods, resourcepacks or shaderpacks
+/// folder, labelled with whether Blocklight installed it from a provider
+/// or it was added by hand. Reads the folder itself, so it works offline.
+#[tauri::command]
+pub fn list_installed_content(
+    state: State<AppState>,
+    instance_id: String,
+    content_type: ContentType,
+) -> Result<Vec<InstalledItem>, AppError> {
+    let instance = state.instances.get(&instance_id)?;
+    local_content::list_items(&instance, content_type)
+}
+
+/// Permanently deletes one entry and its install record. Refused while
+/// the game is running (the file may be in use, and the change wouldn't
+/// apply to the running session anyway).
+#[tauri::command]
+pub fn remove_installed_content(
+    state: State<AppState>,
+    instance_id: String,
+    content_type: ContentType,
+    file_name: String,
+) -> Result<(), AppError> {
+    if state.processes.is_running(&instance_id) {
+        return Err(AppError::Internal(
+            "stop the game before removing content".into(),
+        ));
+    }
+    let instance = state.instances.get(&instance_id)?;
+    local_content::remove_item(&instance, content_type, &file_name)?;
+    state
+        .instances
+        .forget_installed_file(&instance_id, content_type, &file_name)?;
+    Ok(())
+}
+
+/// Opens a native file picker (done here, in the backend, so the
+/// webview needs no filesystem or dialog permissions) and copies the
+/// chosen `.jar` (mods) or `.zip` (resource/shader packs) files into the
+/// instance -- for content that isn't on Modrinth/CurseForge. Must be
+/// `async`: a synchronous command runs on the main thread, which is the
+/// thread the dialog needs.
+#[tauri::command]
+pub async fn add_local_content(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+    content_type: ContentType,
+) -> Result<AddResult, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (ext, _) = local_content::kind(content_type)?;
+    let instance = state.instances.get(&instance_id)?;
+
+    let (title, filter_name) = match content_type {
+        ContentType::Mod => ("Add mods (.jar files)", "Java mods"),
+        ContentType::ResourcePack => ("Add resource packs (.zip files)", "Resource packs"),
+        _ => ("Add shader packs (.zip files)", "Shader packs"),
+    };
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title(title)
+        .add_filter(filter_name, &[ext])
+        .pick_files(move |picked| {
+            let _ = tx.send(picked);
+        });
+
+    let picked = rx
+        .await
+        .map_err(|_| AppError::Internal("the file picker closed unexpectedly".into()))?;
+
+    let paths: Vec<PathBuf> = picked
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|file| file.into_path().ok())
+        .collect();
+
+    if paths.is_empty() {
+        return Ok(AddResult {
+            cancelled: true,
+            ..AddResult::default()
+        });
+    }
+
+    // Copying and reading archives is blocking file I/O; keep it off the
+    // async workers.
+    tokio::task::spawn_blocking(move || local_content::add_from_paths(&instance, content_type, &paths))
+        .await
+        .map_err(|e| AppError::Internal(format!("adding files failed: {e}")))
+}
+
+/// Opens the instance's mods / resourcepacks / shaderpacks folder in the
+/// system file manager. Looked up by instance id and content type in the
+/// backend (like `open_instance_folder`) so the webview never supplies a
+/// path.
+#[tauri::command]
+pub fn open_content_folder(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    instance_id: String,
+    content_type: ContentType,
+) -> Result<(), AppError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    local_content::kind(content_type)?;
+    let instance = state.instances.get(&instance_id)?;
+    let dir = local_content::content_dir(&instance, content_type);
+    // Recreate it if it was deleted outside Blocklight, so the button
+    // opens an (empty) folder instead of failing.
+    std::fs::create_dir_all(&dir)?;
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| AppError::Internal(format!("couldn't open the folder: {e}")))
 }
 
 // ---------------------------------------------------------------------
