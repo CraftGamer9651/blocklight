@@ -240,3 +240,18 @@ export function isAppError(value: unknown): value is AppError {
     "message" in value
   );
 }
+
+/** One mod in the Performance Pack for an instance's loader (src-tauri/src/performance.rs). */
+export interface PerformancePackEntry {
+  slug: string;
+  label: string;
+  purpose: string;
+  alreadyInstalled: boolean;
+}
+
+export interface PerformancePackResult {
+  /** Display names of everything newly installed, dependencies included. */
+  installed: string[];
+  skipped: { label: string; reason: string }[];
+  instance: Instance;
+}

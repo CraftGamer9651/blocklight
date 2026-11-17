@@ -17,6 +17,8 @@ import type {
   MsaPrompt,
   OfflineProfile,
   OfflineReadiness,
+  PerformancePackEntry,
+  PerformancePackResult,
   Platform,
   PrepareProgress,
   Project,
@@ -173,6 +175,14 @@ export function stopInstance(instanceId: string): Promise<void> {
 
 export function isInstanceRunning(instanceId: string): Promise<boolean> {
   return invoke("is_instance_running", { instanceId });
+}
+
+export function performancePackInfo(instanceId: string): Promise<PerformancePackEntry[]> {
+  return invoke("performance_pack_info", { instanceId });
+}
+
+export function installPerformancePack(instanceId: string): Promise<PerformancePackResult> {
+  return invoke("install_performance_pack", { instanceId });
 }
 
 export function getAccountState(): Promise<AccountState> {

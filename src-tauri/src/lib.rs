@@ -11,6 +11,7 @@ mod local_content;
 mod models;
 mod msa;
 mod network_monitor;
+mod performance;
 mod presence;
 mod profiles;
 mod providers;
@@ -108,6 +109,8 @@ pub fn run() {
             commands::delete_offline_profile,
             commands::switch_to_microsoft,
             commands::sign_in_with_microsoft,
+            performance::performance_pack_info,
+            performance::install_performance_pack,
             commands::set_curseforge_api_key,
             commands::has_curseforge_api_key,
         ])

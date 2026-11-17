@@ -11,6 +11,7 @@ import { WorldsList } from "@/components/history/WorldsList";
 import { NewInstanceModal } from "@/components/instances/NewInstanceModal";
 import { LaunchPanel } from "@/components/instances/LaunchPanel";
 import { JvmArgsEditor } from "@/components/instances/JvmArgsEditor";
+import { PerformancePackPanel } from "@/components/instances/PerformancePackPanel";
 import { RemoveInstanceModal } from "@/components/instances/RemoveInstanceModal";
 import { useLinkInstallFlow } from "@/hooks/useLinkInstallFlow";
 import { useLaunch } from "@/hooks/useLaunch";
@@ -192,6 +193,8 @@ function InstanceTile({
           </Badge>
         )}
       </div>
+
+      <PerformancePackPanel instance={instance} disabled={busy} onInstalled={onUpdated} />
 
       <JvmArgsEditor instance={instance} disabled={busy} onSaved={onUpdated} />
 
