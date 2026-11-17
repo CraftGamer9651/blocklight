@@ -29,10 +29,11 @@ export function PerformancePackPanel({
 
   const vanilla = instance.loader === "minecraft";
 
-  // Reload the checklist when the panel opens, the instance changes, or
-  // an install lands (instance.installed changes length).
+  // Load the checklist up front so the header badge is accurate before
+  // the panel is opened, and reload when the instance changes or an
+  // install lands (instance.installed changes length).
   useEffect(() => {
-    if (!open || vanilla) return;
+    if (vanilla) return;
     let cancelled = false;
     performancePackInfo(instance.id)
       .then((list) => {
@@ -44,7 +45,7 @@ export function PerformancePackPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, vanilla, instance.id, instance.installed.length]);
+  }, [vanilla, instance.id, instance.installed.length]);
 
   useEffect(() => {
     setResult(null);
@@ -69,14 +70,51 @@ export function PerformancePackPanel({
 
   const missing = entries?.filter((e) => !e.alreadyInstalled).length ?? 0;
 
+  const total = entries?.length ?? 0;
+  const allInstalled = entries !== null && total > 0 && missing === 0;
+
   return (
-    <div style={{ marginTop: 14 }}>
-      <Button variant="ghost" size="sm" onClick={() => setOpen((o) => !o)}>
-        {open ? "Hide" : "Show"} Performance Pack
-      </Button>
+    <div
+      style={{
+        marginTop: 14,
+        padding: 14,
+        borderRadius: 10,
+        background: "var(--ember-wash)",
+        border: "1px solid var(--ember)",
+      }}
+    >
+      <div
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}
+      >
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <strong style={{ fontSize: 14 }}>⚡ Performance Pack</strong>
+            {!vanilla && entries && (
+              <Badge tone={allInstalled ? "success" : "warn"}>
+                {allInstalled ? "All installed" : `${total - missing} of ${total} installed`}
+              </Badge>
+            )}
+          </div>
+          <p className="page-subtitle" style={{ marginTop: 4 }}>
+            {vanilla
+              ? "Higher FPS and smoother gameplay with a mod loader."
+              : allInstalled
+                ? "This instance is already optimized."
+                : "Get higher FPS and smoother gameplay in one click."}
+          </p>
+        </div>
+        <Button
+          variant={open || allInstalled || vanilla ? "secondary" : "primary"}
+          size="sm"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? "Hide" : vanilla ? "Learn more" : allInstalled ? "View" : "Boost FPS"}
+        </Button>
+      </div>
 
       {open && (
-        <div style={{ marginTop: 8 }}>
+        <div style={{ marginTop: 10 }}>
           {vanilla ? (
             <p className="page-subtitle">
               Performance mods need a mod loader. Create a Fabric or NeoForge instance for this

@@ -181,6 +181,8 @@ function InstanceTile({
         </p>
       )}
 
+      <PerformancePackPanel instance={instance} disabled={busy} onInstalled={onUpdated} />
+
       <div style={{ marginTop: 14 }}>
         {readiness === null ? null : readiness.ready ? (
           <Badge tone="success" dot>
@@ -193,8 +195,6 @@ function InstanceTile({
           </Badge>
         )}
       </div>
-
-      <PerformancePackPanel instance={instance} disabled={busy} onInstalled={onUpdated} />
 
       <JvmArgsEditor instance={instance} disabled={busy} onSaved={onUpdated} />
 
